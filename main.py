@@ -1,93 +1,106 @@
-from fastapi import FastAPI, HTTPException, Depends, Header, status
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import Dict, List
 
-app = FastAPI(title="Orquestación de Servicios")
+app = FastAPI(title="API de Orquestación")
 
-# --- Simulación de usuarios y tokens/Roles ---
-fake_users = {
-    "alice": {"password": "secret1", "role": "Administrador"},
-    "bob":   {"password": "secret2", "role": "Orquestador"},
-    "eve":   {"password": "secret3", "role": "Usuario"}
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/autenticar-usuario")
+
+# Simulaciones en memoria
+users_db = {
+    "admin": {"password": "admin123", "role": "Administrador"},
+    "orq": {"password": "orq123", "role": "Orquestador"},
+    "user": {"password": "user123", "role": "Usuario"}
 }
-fake_tokens = {}  # token -> username
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="autenticar-usuario")
-
-def get_current_user(token: str = Depends(oauth2_scheme)):
-    username = fake_tokens.get(token)
-    if not username:
-        raise HTTPException(status_code=401, detail="Token inválido")
-    return {"username": username, "role": fake_users[username]["role"]}
-
-def require_role(*roles):
-    def checker(user=Depends(get_current_user)):
-        if user["role"] not in roles:
-            raise HTTPException(status_code=403, detail="No autorizado")
-        return user
-    return checker
+tokens_db = {}  # token: username
+services_db = {}
+rules_db = {}
 
 # --- Modelos ---
-class OrquestarRequest(BaseModel):
-    servicio_destino: str
-    parametros_adicionales: Dict
 
-class RegistrarServicioRequest(BaseModel):
+class Servicio(BaseModel):
     nombre: str
     descripcion: str
     endpoints: List[str]
 
-class ActualizarReglasRequest(BaseModel):
-    reglas: Dict
+class ReglasOrquestacion(BaseModel):
+    reglas: Dict[str, str]
 
-class AutenticarRequest(BaseModel):
+class SolicitudOrquestar(BaseModel):
+    servicio_destino: str
+    parametros_adicionales: Dict[str, str]
+
+class Credenciales(BaseModel):
     nombre_usuario: str
     contrasena: str
 
-class AutorizarRequest(BaseModel):
+class SolicitudAutorizacion(BaseModel):
     recursos: List[str]
     rol_usuario: str
+
+# --- Utilidades ---
+
+def generar_token(username: str) -> str:
+    return f"token-{username}"
+
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    username = tokens_db.get(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Token inválido")
+    return {"username": username, "role": users_db[username]["role"]}
+
+def require_roles(*roles):
+    def role_checker(user=Depends(get_current_user)):
+        if user["role"] not in roles:
+            raise HTTPException(status_code=403, detail="No autorizado")
+        return user
+    return role_checker
 
 # --- Endpoints ---
 
 @app.post("/autenticar-usuario")
-def autenticar(req: AutenticarRequest):
-    user = fake_users.get(req.nombre_usuario)
-    if not user or user["password"] != req.contrasena:
-        raise HTTPException(status_code=401, detail="Credenciales inválidas")
-    # Generar token (simple)
-    token = f"token-{req.nombre_usuario}"
-    fake_tokens[token] = req.nombre_usuario
+def autenticar_usuario(cred: Credenciales):
+    usuario = users_db.get(cred.nombre_usuario)
+    if not usuario or usuario["password"] != cred.contrasena:
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+    token = generar_token(cred.nombre_usuario)
+    tokens_db[token] = cred.nombre_usuario
     return {"access_token": token, "token_type": "bearer"}
 
 @app.post("/autorizar-acceso")
-def autorizar(req: AutorizarRequest, user=Depends(require_role("Administrador", "Orquestador"))):
-    # Ejemplo simple: si el rol pedido coincide con un rol permitido
-    if req.rol_usuario not in ["Administrador", "Orquestador", "Usuario"]:
-        raise HTTPException(status_code=400, detail="Rol desconocido")
-    return {"authorized": True, "recursos": req.recursos}
-
-@app.post("/orquestar")
-def orquestar(req: OrquestarRequest, user=Depends(require_role("Administrador", "Orquestador"))):
-    # Lógica de orquestación simulada
+def autorizar_acceso(solicitud: SolicitudAutorizacion, user=Depends(require_roles("Administrador", "Orquestador"))):
+    # Simula que todos los recursos están permitidos para el rol válido
     return {
-        "status": "Orquestación exitosa",
-        "servicio": req.servicio_destino,
-        "parametros": req.parametros_adicionales
+        "autorizado": True,
+        "rol_usuario": solicitud.rol_usuario,
+        "recursos_autorizados": solicitud.recursos
     }
 
 @app.get("/informacion-servicio/{id}")
-def informacion_servicio(id: str, user=Depends(get_current_user)):
-    # Simulación: devolver datos dummy
-    return {"id": id, "nombre": f"Servicio {id}", "endpoints": [f"/serv/{id}/accion"]}
+def obtener_info_servicio(id: str, user=Depends(get_current_user)):
+    servicio = services_db.get(id)
+    if not servicio:
+        raise HTTPException(status_code=404, detail="Servicio no encontrado")
+    return {"id": id, "datos": servicio}
 
 @app.post("/registrar-servicio")
-def registrar_servicio(req: RegistrarServicioRequest, user=Depends(require_role("Administrador"))):
-    # Simular guardado
-    return {"status": "Servicio registrado", "servicio": req}
+def registrar_servicio(servicio: Servicio, user=Depends(require_roles("Administrador"))):
+    servicio_id = servicio.nombre.lower().replace(" ", "_")
+    services_db[servicio_id] = servicio
+    return {"mensaje": "Servicio registrado correctamente", "id": servicio_id}
 
 @app.put("/actualizar-reglas-orquestacion")
-def actualizar_reglas(req: ActualizarReglasRequest, user=Depends(require_role("Orquestador"))):
-    # Simulación actualizando reglas
-    return {"status": "Reglas actualizadas", "reglas": req.reglas}
+def actualizar_reglas(reglas: ReglasOrquestacion, user=Depends(require_roles("Orquestador"))):
+    rules_db.update(reglas.reglas)
+    return {"mensaje": "Reglas actualizadas", "reglas": rules_db}
+
+@app.post("/orquestar")
+def orquestar(solicitud: SolicitudOrquestar, user=Depends(require_roles("Administrador", "Orquestador"))):
+    if solicitud.servicio_destino not in services_db:
+        raise HTTPException(status_code=404, detail="Servicio de destino no encontrado")
+    return {
+        "mensaje": "Orquestación exitosa",
+        "servicio_destino": solicitud.servicio_destino,
+        "parametros_enviados": solicitud.parametros_adicionales
+    }

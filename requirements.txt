@@ -1,3 +1,2 @@
-fastapi
-uvicorn[standard]
+fastapi[all]
 python-multipart
